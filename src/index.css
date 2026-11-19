@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    color: #0f172a;
+    background-color: #ffffff;
+  }
+
+  body {
+    background-color: #ffffff;
+    color: #0f172a;
+    margin: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.font-timer {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+}
