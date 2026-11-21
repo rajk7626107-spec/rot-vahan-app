@@ -1,0 +1,110 @@
+name: Build Android APKs
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  build-rot-vahan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK Licenses
+        run: |
+          SDKM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build ROT Vahan Debug APK
+        working-directory: android-app
+        run: gradle assembleDebug --no-daemon
+
+      - name: Prepare ROT Vahan APK
+        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk ROT-Vahan.apk
+
+      - name: Upload ROT Vahan APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ROT-Vahan-apk
+          path: ROT-Vahan.apk
+
+  build-csk-admin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK Licenses
+        run: |
+          SDKM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build CSK Admin Debug APK
+        working-directory: csk-admin-android
+        run: gradle assembleDebug --no-daemon
+
+      - name: Prepare CSK Admin APK
+        run: cp csk-admin-android/app/build/outputs/apk/debug/app-debug.apk CSK-Admin.apk
+
+      - name: Upload CSK Admin APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CSK-Admin-apk
+          path: CSK-Admin.apk
+
+  publish-release:
+    needs: [build-rot-vahan, build-csk-admin]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download ROT Vahan APK
+        uses: actions/download-artifact@v4
+        with:
+          name: ROT-Vahan-apk
+
+      - name: Download CSK Admin APK
+        uses: actions/download-artifact@v4
+        with:
+          name: CSK-Admin-apk
+
+      - name: Publish Direct APK Download Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest -y || true
+          gh release create latest ROT-Vahan.apk CSK-Admin.apk \
+            --title "ROT Vahan & CSK Admin APKs" \
+            --notes "Direct Android Debug APK downloads for ROT Vahan and CSK Admin Panel."
