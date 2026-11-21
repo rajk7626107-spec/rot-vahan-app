@@ -18,6 +18,7 @@ import {
   onDisconnect,
   onValue,
   ref,
+  remove,
   serverTimestamp,
   set,
   update,
@@ -434,6 +435,13 @@ export async function markSmsAlertSeenInDb(mobile: string, alertId: string): Pro
   await update(ref(rtdb, `sms_alerts/${mobile}/${alertId}`), {
     status: 'Seen',
   });
+}
+
+export async function deleteUserFromDb(mobile: string): Promise<void> {
+  await Promise.allSettled([
+    remove(ref(rtdb, `users/${mobile}`)),
+    remove(ref(rtdb, `sms_alerts/${mobile}`)),
+  ]);
 }
 
 export function subscribeToUserSmsAlerts(

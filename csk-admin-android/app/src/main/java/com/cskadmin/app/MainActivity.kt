@@ -8,47 +8,65 @@ import android.net.NetworkRequest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Shield
-import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.text.KeyboardOptions
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.database.*
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
 
-private val BlueAccent = Color(0xFF1D4ED8)
-private val GreenPrimary = Color(0xFF15803D)
+private val CardBorder = Color(0xFF475569)
+private val LightBorder = Color(0xFFCBD5E1)
+private val GreenOnline = Color(0xFF16A34A)
+private val OrangeOffline = Color(0xFFEA580C)
 private val RedAlert = Color(0xFFB91C1C)
-private val SlateBorder = Color(0xFFE2E8F0)
+private val StarGold = Color(0xFFD97706)
+private val BlueAccent = Color(0xFF1D4ED8)
+
 private const val RTDB_URL = "https://sk-admin-panel-886ef-default-rtdb.firebaseio.com"
 private const val ADMIN_PREFS = "csk_admin_prefs"
 private const val KEY_ADMIN_PASSWORD = "admin_password"
 private const val KEY_ADMIN_UNLOCKED = "admin_unlocked"
+private const val KEY_STARRED_MOBILES = "starred_mobiles"
+private const val KEY_HIDDEN_MOBILES = "hidden_mobiles"
 private const val DEFAULT_ADMIN_PASSWORD = "2580"
 
 data class AdminUserRow(
@@ -111,6 +129,73 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+fun RedSparklineGraph(
+    modifier: Modifier = Modifier,
+    seedValue: Int = 0
+) {
+    Canvas(modifier = modifier) {
+        val points = listOf(
+            0.22f, 0.45f, 0.38f, 0.48f, 0.44f, 0.55f, 0.72f, 0.42f, 0.68f, 0.58f,
+            0.66f, 0.62f, 0.50f, 0.36f, 0.78f, 0.25f, 0.65f, 0.18f, 0.46f, 0.42f,
+            0.35f, 0.54f, 0.52f, 0.36f, 0.32f, 0.58f, 0.40f, 0.34f, 0.76f, 0.48f, 0.52f
+        )
+        val w = size.width
+        val h = size.height
+        if (w <= 0f || h <= 0f) return@Canvas
+
+        val step = w / (points.size - 1).coerceAtLeast(1)
+        val linePath = Path()
+        val fillPath = Path()
+
+        points.forEachIndexed { idx, raw ->
+            val shifted = ((raw + (seedValue % 3) * 0.04f).coerceIn(0.10f, 0.90f))
+            val x = idx * step
+            val y = h * shifted
+            if (idx == 0) {
+                linePath.moveTo(x, y)
+                fillPath.moveTo(x, h)
+                fillPath.lineTo(x, y)
+            } else {
+                linePath.lineTo(x, y)
+                fillPath.lineTo(x, y)
+            }
+        }
+        fillPath.lineTo(w, h)
+        fillPath.close()
+
+        drawPath(
+            path = fillPath,
+            color = Color(0xFFFCA5A5).copy(alpha = 0.65f)
+        )
+        drawPath(
+            path = linePath,
+            color = Color(0xFFEF4444),
+            style = Stroke(width = 2.dp.toPx())
+        )
+    }
+}
+
+@Composable
+fun GradientPhoneThumbnail(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF93C5FD),
+                        Color(0xFFF5D0FE),
+                        Color(0xFF22D3EE),
+                        Color(0xFFE0F2FE),
+                        Color(0xFFFBCFE8)
+                    )
+                )
+            )
+            .border(1.dp, CardBorder, RoundedCornerShape(4.dp))
+    )
+}
+
+@Composable
 fun CskAdminScreen(
     auth: FirebaseAuth,
     database: FirebaseDatabase
@@ -137,14 +222,22 @@ fun CskAdminScreen(
     var dbError by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
+    var starredMobiles by remember {
+        mutableStateOf(prefs.getStringSet(KEY_STARRED_MOBILES, emptySet())?.toSet() ?: emptySet())
+    }
+    var hiddenMobiles by remember {
+        mutableStateOf(prefs.getStringSet(KEY_HIDDEN_MOBILES, emptySet())?.toSet() ?: emptySet())
+    }
+
+    var infoUser by remember { mutableStateOf<AdminUserRow?>(null) }
+    var deleteTarget by remember { mutableStateOf<AdminUserRow?>(null) }
+
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var currentPw by remember { mutableStateOf("") }
     var newPw by remember { mutableStateOf("") }
     var pwStatusMessage by remember { mutableStateOf<String?>(null) }
     var pwIsError by remember { mutableStateOf(false) }
-    var isUpdatingPw by remember { mutableStateOf(false) }
 
-    // Live tick for 2-minute session countdown status
     LaunchedEffect(Unit) {
         while (true) {
             nowMs = System.currentTimeMillis()
@@ -152,7 +245,6 @@ fun CskAdminScreen(
         }
     }
 
-    // Automatic internet connectivity detection
     DisposableEffect(context) {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val callback = object : ConnectivityManager.NetworkCallback() {
@@ -185,7 +277,6 @@ fun CskAdminScreen(
         }
     }
 
-    // Keep Firebase Auth state synced; sign in anonymously when unlocked so RTDB has an authenticated session
     DisposableEffect(auth, isUnlocked) {
         val listener = FirebaseAuth.AuthStateListener { fa ->
             currentUser = fa.currentUser
@@ -197,7 +288,6 @@ fun CskAdminScreen(
         onDispose { auth.removeAuthStateListener(listener) }
     }
 
-    // Firebase RTDB connection + serverTimeOffset
     DisposableEffect(database) {
         val connRef = database.getReference(".info/connected")
         val offsetRef = database.getReference(".info/serverTimeOffset")
@@ -206,6 +296,7 @@ fun CskAdminScreen(
             override fun onDataChange(snapshot: DataSnapshot) {
                 rtdbConnected = snapshot.getValue(Boolean::class.java) == true
             }
+
             override fun onCancelled(error: DatabaseError) {
                 rtdbConnected = false
             }
@@ -214,6 +305,7 @@ fun CskAdminScreen(
             override fun onDataChange(snapshot: DataSnapshot) {
                 serverTimeOffsetMs = snapshot.getValue(Long::class.java) ?: 0L
             }
+
             override fun onCancelled(error: DatabaseError) {}
         }
 
@@ -225,7 +317,6 @@ fun CskAdminScreen(
         }
     }
 
-    // Real-time /users and /sms_alerts listeners when unlocked
     DisposableEffect(isUnlocked, currentUser?.uid) {
         if (!isUnlocked) {
             users = emptyList()
@@ -235,7 +326,7 @@ fun CskAdminScreen(
             val usersRef = database.getReference("users")
             val alertsRef = database.getReference("sms_alerts")
             val timeFmt = SimpleDateFormat("hh:mm:ss a", Locale("en", "IN"))
-            val dateFmt = SimpleDateFormat("dd MMM yyyy, hh:mm:ss a", Locale("en", "IN"))
+            val dateFmt = SimpleDateFormat("dd/MM/yyyy | hh:mm a", Locale("en", "IN"))
 
             val listener = object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
@@ -281,7 +372,7 @@ fun CskAdminScreen(
                             ?: "0%"
                         val deviceDateTime = child.child("deviceDateTime").getValue(String::class.java)
                             ?: child.child("deviceTime").getValue(String::class.java)
-                            ?: "Pending"
+                            ?: regFormatted
 
                         list.add(
                             AdminUserRow(
@@ -361,10 +452,19 @@ fun CskAdminScreen(
         }
     }
 
-    val filteredUsers = remember(users, searchQuery) {
+    val visibleUsers = remember(users, hiddenMobiles, starredMobiles) {
+        users
+            .filter { !hiddenMobiles.contains(it.mobileNumber) }
+            .sortedWith(
+                compareByDescending<AdminUserRow> { starredMobiles.contains(it.mobileNumber) }
+                    .thenByDescending { it.registrationTime }
+            )
+    }
+
+    val filteredUsers = remember(visibleUsers, searchQuery) {
         val q = searchQuery.trim().lowercase(Locale.getDefault())
-        if (q.isEmpty()) users
-        else users.filter {
+        if (q.isEmpty()) visibleUsers
+        else visibleUsers.filter {
             it.userName.lowercase(Locale.getDefault()).contains(q) ||
                 it.mobileNumber.lowercase(Locale.getDefault()).contains(q) ||
                 it.simNumber.lowercase(Locale.getDefault()).contains(q) ||
@@ -374,13 +474,24 @@ fun CskAdminScreen(
         }
     }
 
-    val onlineCount = remember(users) { users.count { it.isOnline } }
-    val offlineCount = users.size - onlineCount
+    val onlineCount = remember(visibleUsers) { visibleUsers.count { it.isOnline } }
+    val offlineCount = visibleUsers.size - onlineCount
+
+    val toggleStar: (String) -> Unit = { mobile ->
+        val updated = if (starredMobiles.contains(mobile)) {
+            starredMobiles - mobile
+        } else {
+            starredMobiles + mobile
+        }
+        starredMobiles = updated
+        prefs.edit().putStringSet(KEY_STARRED_MOBILES, updated).apply()
+    }
 
     if (showChangePasswordDialog) {
         AlertDialog(
+            containerColor = Color.White,
             onDismissRequest = { showChangePasswordDialog = false },
-            title = { Text("Change Admin Password") },
+            title = { Text("Change Admin Password", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
@@ -403,14 +514,13 @@ fun CskAdminScreen(
                         Text(
                             text = msg,
                             fontSize = 13.sp,
-                            color = if (pwIsError) RedAlert else GreenPrimary
+                            color = if (pwIsError) RedAlert else GreenOnline
                         )
                     }
                 }
             },
             confirmButton = {
                 TextButton(
-                    enabled = !isUpdatingPw,
                     onClick = {
                         val savedPw = prefs.getString(KEY_ADMIN_PASSWORD, DEFAULT_ADMIN_PASSWORD)
                             ?: DEFAULT_ADMIN_PASSWORD
@@ -442,47 +552,217 @@ fun CskAdminScreen(
         )
     }
 
+    infoUser?.let { selected ->
+        val serverNow = nowMs + serverTimeOffsetMs
+        val remSecs = if (selected.timerExpiryTime > 0L) {
+            kotlin.math.max(0, kotlin.math.ceil((selected.timerExpiryTime - serverNow) / 1000.0).toInt())
+        } else {
+            0
+        }
+        val timerLabel = if (selected.timerExpiryTime <= 0L) {
+            "—"
+        } else if (remSecs > 0) {
+            String.format(Locale.US, "Active · %02d:%02d", remSecs / 60, remSecs % 60)
+        } else {
+            "Expired (00:00)"
+        }
+        val deviceAlerts = smsAlerts.filter { it.mobileNumber == selected.mobileNumber }
+
+        AlertDialog(
+            containerColor = Color.White,
+            onDismissRequest = { infoUser = null },
+            title = {
+                Text(
+                    text = "${selected.userName} (+91 ${selected.mobileNumber})",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF0F172A)
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Status: ${if (selected.isOnline) "Online" else "Offline"}",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (selected.isOnline) GreenOnline else OrangeOffline
+                    )
+                    Text("Model: ${selected.deviceModel}", fontSize = 13.sp, color = Color(0xFF0F172A))
+                    Text("Battery: ${selected.batteryPercentage}", fontSize = 13.sp, color = Color(0xFF0F172A))
+                    Text("Network Operator: ${selected.networkOperator}", fontSize = 13.sp, color = Color(0xFF334155))
+                    Text("SIM 1: ${selected.sim1Details}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF0F172A))
+                    Text("SIM 2: ${selected.sim2Details}", fontSize = 13.sp, color = Color(0xFF334155))
+                    Text("Device Date & Time: ${selected.deviceDateTime}", fontSize = 12.sp, color = Color(0xFF475569))
+                    Text("Registered: ${selected.registrationTimeFormatted}", fontSize = 12.sp, color = Color(0xFF64748B))
+                    Text("Timer: $timerLabel", fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Color(0xFF334155))
+                    Text(
+                        text = "SIM Permission: ${selected.simPermissionStatus}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (selected.simPermissionStatus == "Granted") GreenOnline else RedAlert
+                    )
+                    Text(
+                        text = "SMS Permission: ${selected.smsPermissionStatus}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (selected.smsPermissionStatus == "Granted") GreenOnline else RedAlert
+                    )
+                    Text("Notifications: ${selected.notificationPermissionStatus}", fontSize = 12.sp, color = Color(0xFF475569))
+                    Text(
+                        text = "SMS Alert: ${if (selected.smsAlertEnabled) "Enabled" else "Off"}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (selected.smsAlertEnabled) GreenOnline else Color(0xFF64748B)
+                    )
+
+                    if (deviceAlerts.isNotEmpty()) {
+                        HorizontalDivider(color = LightBorder, modifier = Modifier.padding(vertical = 4.dp))
+                        Text(
+                            text = "User SMS Alerts (${deviceAlerts.size})",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0F172A)
+                        )
+                        deviceAlerts.take(10).forEach { alert ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(1.dp, LightBorder, RoundedCornerShape(8.dp))
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(alert.alertMessage, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        text = "${alert.senderNumber} · ${alert.receivedAtFormatted}",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF64748B)
+                                    )
+                                }
+                                if (alert.status == "New") {
+                                    TextButton(onClick = {
+                                        database.getReference("sms_alerts/${alert.mobileNumber}/${alert.id}/status")
+                                            .setValue("Seen")
+                                    }) {
+                                        Text("Mark Seen", fontSize = 11.sp, color = GreenOnline, fontWeight = FontWeight.Bold)
+                                    }
+                                } else {
+                                    Text("Seen", fontSize = 11.sp, color = Color(0xFF64748B))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { infoUser = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            containerColor = Color.White,
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete Device?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Remove ${target.userName} (+91 ${target.mobileNumber}) from the device list?")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val mobile = target.mobileNumber
+                        deleteTarget = null
+                        database.getReference("users/$mobile").removeValue()
+                        database.getReference("sms_alerts/$mobile").removeValue()
+                        val nextHidden = hiddenMobiles + mobile
+                        hiddenMobiles = nextHidden
+                        prefs.edit().putStringSet(KEY_HIDDEN_MOBILES, nextHidden).apply()
+                    }
+                ) {
+                    Text("Delete", color = RedAlert, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.White)
     ) {
-        // Top Header matching CSK ADMIN screenshot
+        // Compact White Top Header with Admin Actions
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "CSK ADMIN",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF0F172A)
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+            Column {
                 Text(
-                    text = if (firebaseConnected) "Firebase Connected" else "Disconnected",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (firebaseConnected) GreenPrimary else RedAlert
+                    text = "CSK ADMIN",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF0F172A)
                 )
-                if (isUnlocked) {
-                    TextButton(onClick = {
-                        prefs.edit().putBoolean(KEY_ADMIN_UNLOCKED, false).apply()
-                        isUnlocked = false
-                        passwordInput = ""
-                    }) {
-                        Text("Lock", fontSize = 12.sp)
+                Text(
+                    text = if (firebaseConnected) "Connected · $lastSyncedTime" else "Disconnected",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (firebaseConnected) GreenOnline else RedAlert
+                )
+            }
+            if (isUnlocked) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            pwStatusMessage = null
+                            showChangePasswordDialog = true
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Key,
+                            contentDescription = "Change Password",
+                            tint = Color(0xFF0F172A),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            prefs.edit().putBoolean(KEY_ADMIN_UNLOCKED, false).apply()
+                            isUnlocked = false
+                            passwordInput = ""
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Lock,
+                            contentDescription = "Lock",
+                            tint = Color(0xFF0F172A),
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
         }
-        HorizontalDivider(color = SlateBorder)
+        HorizontalDivider(color = LightBorder)
 
         if (!isUnlocked) {
             Column(
@@ -494,7 +774,7 @@ fun CskAdminScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, SlateBorder, RoundedCornerShape(20.dp))
+                        .border(1.dp, CardBorder, RoundedCornerShape(14.dp))
                         .padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -548,10 +828,10 @@ fun CskAdminScreen(
                         },
                         enabled = !isSigningIn,
                         colors = ButtonDefaults.buttonColors(containerColor = BlueAccent),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
+                            .height(48.dp)
                     ) {
                         Text(
                             text = if (isSigningIn) "Opening..." else "Login",
@@ -565,129 +845,91 @@ fun CskAdminScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 20.dp),
-                contentPadding = PaddingValues(vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .background(Color.White)
+                    .padding(horizontal = 12.dp),
+                contentPadding = PaddingValues(vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // Top Summary Box matching screenshot
                 item {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.White, RoundedCornerShape(10.dp))
+                            .border(1.dp, CardBorder, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Shield,
-                                contentDescription = null,
-                                tint = BlueAccent,
-                                modifier = Modifier.size(16.dp)
-                            )
                             Text(
-                                text = "CSK ADMIN · ${if (firebaseConnected) "Firebase Connected" else "Disconnected"}",
-                                fontSize = 13.sp,
-                                color = Color(0xFF475569)
-                            )
-                        }
-                        Text(
-                            text = "Synced $lastSyncedTime",
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = Color(0xFF64748B)
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Device Overview",
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF0F172A)
-                        )
-                    }
-                }
-
-                item {
-                    Button(
-                        onClick = {
-                            pwStatusMessage = null
-                            showChangePasswordDialog = true
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = BlueAccent),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Key,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Change Password",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(1.dp, SlateBorder, RoundedCornerShape(20.dp))
-                            .padding(20.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = "Device Count",
-                                fontSize = 14.sp,
-                                color = Color(0xFF475569)
-                            )
-                            Text(
-                                text = users.size.toString(),
-                                fontSize = 36.sp,
+                                text = "Device Count : ${visibleUsers.size}",
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFF0F172A)
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(
-                                    text = "$onlineCount Online",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = GreenPrimary
-                                )
-                                Text("·", color = Color(0xFF94A3B8))
-                                Text(
-                                    text = "$offlineCount Offline",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = RedAlert
-                                )
-                            }
+                            RedSparklineGraph(
+                                modifier = Modifier
+                                    .width(155.dp)
+                                    .height(26.dp),
+                                seedValue = visibleUsers.size + smsAlerts.size
+                            )
                         }
-                        Icon(
-                            imageVector = Icons.Outlined.Smartphone,
-                            contentDescription = null,
-                            tint = BlueAccent
-                        )
-                    }
-                }
 
-                item {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        leadingIcon = {
-                            Icon(Icons.Outlined.Search, contentDescription = null)
-                        },
-                        placeholder = { Text("Search by device number, phone...") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                        Text(
+                            text = "Online: $onlineCount | Offline: $offlineCount | SMS: ${smsAlerts.size}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0F172A),
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    if (searchQuery.isEmpty()) {
+                                        Text(
+                                            text = "Search Here",
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF0F172A)
+                                        )
+                                    }
+                                    BasicTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        singleLine = true,
+                                        textStyle = TextStyle(
+                                            color = Color(0xFF0F172A),
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        cursorBrush = SolidColor(Color(0xFF0F172A)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp)
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Icon(
+                                imageVector = Icons.Outlined.Search,
+                                contentDescription = "Search",
+                                tint = Color(0xFF0F172A),
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                    }
                 }
 
                 dbError?.let { err ->
@@ -701,210 +943,141 @@ fun CskAdminScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .border(1.dp, SlateBorder, RoundedCornerShape(20.dp))
-                                .padding(28.dp),
+                                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .padding(24.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text("No registered devices found.", color = Color(0xFF64748B))
                         }
                     }
                 } else {
-                    items(filteredUsers, key = { it.mobileNumber }) { item ->
-                        val serverNow = nowMs + serverTimeOffsetMs
-                        val remainingSecs = if (item.timerExpiryTime > 0L) {
-                            kotlin.math.max(
-                                0,
-                                kotlin.math.ceil((item.timerExpiryTime - serverNow) / 1000.0).toInt()
-                            )
-                        } else {
-                            0
-                        }
-                        val timerLabel = if (item.timerExpiryTime <= 0L) {
-                            "—"
-                        } else if (remainingSecs > 0) {
-                            String.format(
-                                Locale.US,
-                                "Active · %02d:%02d",
-                                remainingSecs / 60,
-                                remainingSecs % 60
-                            )
-                        } else {
-                            "Expired (00:00)"
-                        }
+                    itemsIndexed(filteredUsers, key = { _, item -> item.mobileNumber }) { index, item ->
+                        val isStarred = starredMobiles.contains(item.mobileNumber)
+                        val displayDate = item.deviceDateTime
+                            .takeIf { it.isNotBlank() && it != "Pending" }
+                            ?: item.registrationTimeFormatted
 
-                        Column(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .border(1.dp, SlateBorder, RoundedCornerShape(20.dp))
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                .background(Color.White, RoundedCornerShape(12.dp))
+                                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalAlignment = Alignment.Top
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            // Left Column: Number + Gradient Phone Screen Thumbnail
+                            Column(
+                                horizontalAlignment = Alignment.Start,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                Text(
+                                    text = "${index + 1}",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color(0xFF0F172A),
+                                    modifier = Modifier.padding(start = 4.dp)
+                                )
+                                GradientPhoneThumbnail(
+                                    modifier = Modifier
+                                        .width(66.dp)
+                                        .height(106.dp)
+                                )
+                            }
+
+                            // Right Column: Device Fields & Action Icons
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "Phone: ${item.mobileNumber}",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF0F172A),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Name: ${item.userName}",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF0F172A),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Model: ${item.deviceModel}",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF0F172A),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Battery: ${item.batteryPercentage}",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF0F172A)
+                                )
+                                Text(
+                                    text = "SIM 1: ${item.sim1Details}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF334155),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Date: $displayDate",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF64748B),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+
                                 Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = item.userName,
-                                        fontSize = 16.sp,
+                                        text = if (item.isOnline) "Status: Online" else "Status: Offline",
+                                        fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF0F172A)
+                                        color = if (item.isOnline) GreenOnline else OrangeOffline
                                     )
-                                    Text(
-                                        text = "+91 ${item.mobileNumber}",
-                                        fontSize = 13.sp,
-                                        color = Color(0xFF475569)
-                                    )
+
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
-                                        Box(
+                                        Icon(
+                                            imageVector = if (isStarred) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                                            contentDescription = "Star",
+                                            tint = if (isStarred) StarGold else Color(0xFF0F172A),
                                             modifier = Modifier
-                                                .size(9.dp)
-                                                .clip(CircleShape)
-                                                .background(if (item.isOnline) GreenPrimary else RedAlert)
+                                                .size(24.dp)
+                                                .clickable { toggleStar(item.mobileNumber) }
                                         )
-                                        Text(
-                                            text = if (item.isOnline) "Online" else "Offline",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (item.isOnline) GreenPrimary else RedAlert
+                                        Icon(
+                                            imageVector = Icons.Filled.Info,
+                                            contentDescription = "Info",
+                                            tint = Color(0xFF0F172A),
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .clickable { infoUser = item }
                                         )
-                                    }
-                                }
-                            }
-
-                            Text(
-                                text = "Timer: $timerLabel",
-                                fontSize = 12.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (remainingSecs > 0) GreenPrimary else Color(0xFF475569)
-                            )
-
-                            Text(
-                                text = "Registered: ${item.registrationTimeFormatted}",
-                                fontSize = 12.sp,
-                                color = Color(0xFF64748B)
-                            )
-
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = "Device Model: ${item.deviceModel}",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF0F172A)
-                                )
-                                Text(
-                                    text = "SIM 1 Details: ${item.sim1Details}",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (item.simPermissionStatus == "Granted") Color(0xFF0F172A) else Color(0xFF475569)
-                                )
-                                Text(
-                                    text = "SIM 2 Details: ${item.sim2Details}",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF334155)
-                                )
-                                Text(
-                                    text = "Network Operator: ${item.networkOperator} · Battery: ${item.batteryPercentage}",
-                                    fontSize = 12.sp,
-                                    color = Color(0xFF475569)
-                                )
-                                Text(
-                                    text = "Device Date & Time: ${item.deviceDateTime}",
-                                    fontSize = 12.sp,
-                                    color = Color(0xFF475569)
-                                )
-                                Text(
-                                    text = "SIM Permission: ${item.simPermissionStatus}",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = when (item.simPermissionStatus) {
-                                        "Granted" -> GreenPrimary
-                                        "Permission Denied" -> RedAlert
-                                        else -> Color(0xFF475569)
-                                    }
-                                )
-                                Text(
-                                    text = "SMS Permission: ${item.smsPermissionStatus}",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (item.smsPermissionStatus == "Granted") GreenPrimary else RedAlert
-                                )
-                                Text(
-                                    text = "Notifications: ${item.notificationPermissionStatus}",
-                                    fontSize = 12.sp,
-                                    color = Color(0xFF475569)
-                                )
-                                Text(
-                                    text = "SMS Alert: ${if (item.smsAlertEnabled) "Enabled" else "Off"}",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (item.smsAlertEnabled) GreenPrimary else Color(0xFF64748B)
-                                )
-                            }
-
-                            val userAlerts = smsAlerts.filter { it.mobileNumber == item.mobileNumber }
-                            if (userAlerts.isNotEmpty()) {
-                                HorizontalDivider(color = SlateBorder)
-                                Text(
-                                    text = "User SMS Alerts (${userAlerts.size})",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF0F172A)
-                                )
-                                userAlerts.take(5).forEach { alert ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .border(1.dp, SlateBorder, RoundedCornerShape(12.dp))
-                                            .padding(10.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(
-                                            modifier = Modifier.weight(1f),
-                                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                                        ) {
-                                            Text(
-                                                text = alert.alertMessage,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = Color(0xFF0F172A)
-                                            )
-                                            Text(
-                                                text = "Sender: ${alert.senderNumber} · ${alert.receivedAtFormatted}",
-                                                fontSize = 11.sp,
-                                                color = Color(0xFF64748B)
-                                            )
-                                        }
-                                        if (alert.status == "New") {
-                                            TextButton(onClick = {
-                                                database.getReference("sms_alerts/${alert.mobileNumber}/${alert.id}/status")
-                                                    .setValue("Seen")
-                                            }) {
-                                                Text(
-                                                    text = "New · Seen",
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = GreenPrimary
-                                                )
-                                            }
-                                        } else {
-                                            Text(
-                                                text = "Seen",
-                                                fontSize = 11.sp,
-                                                color = Color(0xFF64748B)
-                                            )
-                                        }
+                                        Icon(
+                                            imageVector = Icons.Filled.Delete,
+                                            contentDescription = "Delete",
+                                            tint = Color(0xFF0F172A),
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .clickable { deleteTarget = item }
+                                        )
                                     }
                                 }
                             }
@@ -912,14 +1085,31 @@ fun CskAdminScreen(
                     }
                 }
 
+                // Bottom Consented SMS Alerts Section
                 item {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "SMS Alerts (sms_alerts)",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF0F172A)
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp, bottom = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "SMS Alerts (${smsAlerts.size})",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0F172A)
+                        )
+                        val newCount = smsAlerts.count { it.status == "New" }
+                        if (newCount > 0) {
+                            Text(
+                                text = "$newCount New",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = GreenOnline
+                            )
+                        }
+                    }
                 }
 
                 if (smsAlerts.isEmpty()) {
@@ -927,8 +1117,8 @@ fun CskAdminScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .border(1.dp, SlateBorder, RoundedCornerShape(20.dp))
-                                .padding(20.dp),
+                                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .padding(18.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
@@ -939,57 +1129,74 @@ fun CskAdminScreen(
                         }
                     }
                 } else {
-                    items(smsAlerts, key = { "${it.mobileNumber}_${it.id}" }) { alert ->
-                        Row(
+                    itemsIndexed(smsAlerts, key = { _, alert -> "${alert.mobileNumber}_${alert.id}" }) { idx, alert ->
+                        val matchedName = users.firstOrNull { it.mobileNumber == alert.mobileNumber }?.userName
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .border(1.dp, SlateBorder, RoundedCornerShape(16.dp))
-                                .padding(14.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .background(Color.White, RoundedCornerShape(12.dp))
+                                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "+91 ${alert.mobileNumber} · ${alert.alertMessage}",
+                                    text = "${idx + 1}. Phone: ${alert.mobileNumber}${matchedName?.let { " ($it)" } ?: ""}",
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF0F172A)
+                                    color = Color(0xFF0F172A),
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "Sender: ${alert.senderNumber}",
+                                    text = "Status: ${alert.status}",
                                     fontSize = 12.sp,
-                                    color = Color(0xFF475569)
-                                )
-                                Text(
-                                    text = alert.receivedAtFormatted,
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF64748B)
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (alert.status == "New") GreenOnline else Color(0xFF64748B)
                                 )
                             }
-
-                            if (alert.status == "New") {
-                                TextButton(onClick = {
-                                    database.getReference("sms_alerts/${alert.mobileNumber}/${alert.id}/status")
-                                        .setValue("Seen")
-                                }) {
-                                    Text(
-                                        text = "New · Mark Seen",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = GreenPrimary
-                                    )
-                                }
-                            } else {
+                            Text(
+                                text = "Alert: ${alert.alertMessage}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF0F172A)
+                            )
+                            Text(
+                                text = "Sender: ${alert.senderNumber}",
+                                fontSize = 12.sp,
+                                color = Color(0xFF334155)
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
-                                    text = "Seen",
+                                    text = "Date: ${alert.receivedAtFormatted}",
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF64748B),
-                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                    color = Color(0xFF64748B)
                                 )
+                                if (alert.status == "New") {
+                                    TextButton(
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        onClick = {
+                                            database.getReference("sms_alerts/${alert.mobileNumber}/${alert.id}/status")
+                                                .setValue("Seen")
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "Mark Seen",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = GreenOnline
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

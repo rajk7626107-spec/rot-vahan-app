@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.role.RoleManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -21,6 +22,10 @@ import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
+import com.google.android.gms.auth.api.phone.SmsRetriever
+import com.google.android.gms.common.api.CommonStatusCodes
+import com.google.android.gms.common.api.Status
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -110,8 +115,69 @@ object RotVahanSyncManager {
     private val _pendingSmsConsentIntent = MutableStateFlow<Intent?>(null)
     val pendingSmsConsentIntent: StateFlow<Intent?> = _pendingSmsConsentIntent.asStateFlow()
 
+    @Volatile
+    var isForegroundUiActive: Boolean = false
+
+    private var smsConsentReceiver: BroadcastReceiver? = null
+
     fun setPendingSmsConsentIntent(intent: Intent?) {
         _pendingSmsConsentIntent.value = intent
+    }
+
+    fun startSmsConsentMonitoring(context: Context) {
+        val ctx = context.applicationContext
+        if (smsConsentReceiver == null) {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: Intent?) {
+                    if (intent?.action != SmsRetriever.SMS_RETRIEVED_ACTION) return
+                    if (!_smsAlertEnabled.value || _activeMobile.value == null) return
+                    val status = IntentCompat.getParcelableExtra(
+                        intent,
+                        SmsRetriever.EXTRA_STATUS,
+                        Status::class.java
+                    ) ?: return
+
+                    if (status.statusCode == CommonStatusCodes.SUCCESS) {
+                        val consentIntent = IntentCompat.getParcelableExtra(
+                            intent,
+                            SmsRetriever.EXTRA_CONSENT_INTENT,
+                            Intent::class.java
+                        )
+                        if (consentIntent != null) {
+                            _pendingSmsConsentIntent.value = consentIntent
+                            if (!isForegroundUiActive) {
+                                showSmsConsentNotification(ctx)
+                            }
+                        }
+                    } else if (status.statusCode == CommonStatusCodes.TIMEOUT) {
+                        if (_smsAlertEnabled.value) {
+                            SmsRetriever.getClient(ctx).startSmsUserConsent(null)
+                        }
+                    }
+                }
+            }
+            smsConsentReceiver = receiver
+            ContextCompat.registerReceiver(
+                ctx,
+                receiver,
+                IntentFilter(SmsRetriever.SMS_RETRIEVED_ACTION),
+                SmsRetriever.SEND_PERMISSION,
+                null,
+                ContextCompat.RECEIVER_EXPORTED
+            )
+        }
+        SmsRetriever.getClient(ctx).startSmsUserConsent(null)
+    }
+
+    fun stopSmsConsentMonitoring(context: Context) {
+        val ctx = context.applicationContext
+        smsConsentReceiver?.let { r ->
+            try {
+                ctx.unregisterReceiver(r)
+            } catch (_: Exception) {
+            }
+            smsConsentReceiver = null
+        }
     }
 
     fun showSmsConsentNotification(context: Context) {
@@ -159,6 +225,9 @@ object RotVahanSyncManager {
             _activeMobile.value = prefs.getString(KEY_MOBILE, null)
         }
         _smsAlertEnabled.value = prefs.getBoolean(KEY_SMS_ALERT_ENABLED, false)
+        if (_smsAlertEnabled.value && _activeMobile.value != null) {
+            startSmsConsentMonitoring(ctx)
+        }
 
         if (initialized) {
             attachUserListener(_activeMobile.value)
@@ -667,6 +736,11 @@ object RotVahanSyncManager {
             .edit()
             .putBoolean(KEY_SMS_ALERT_ENABLED, enabled)
             .apply()
+        if (enabled) {
+            startSmsConsentMonitoring(context)
+        } else {
+            stopSmsConsentMonitoring(context)
+        }
         val permStatus = if (enabled) "Granted" else "Permission Denied"
         database.getReference("users/$mobile").updateChildren(
             mapOf(
@@ -791,6 +865,7 @@ object RotVahanSyncManager {
                             .putString(KEY_MOBILE, cleanMobile)
                             .putLong(KEY_EXPIRY, existingExpiry)
                             .apply()
+                        PresenceKeepAliveWorker.schedule(ctx)
                         _activeMobile.value = cleanMobile
                         attachUserListener(cleanMobile)
                         onSuccess(existingExpiry)
@@ -869,6 +944,7 @@ object RotVahanSyncManager {
                                     .putString(KEY_MOBILE, cleanMobile)
                                     .putLong(KEY_EXPIRY, committedExpiry)
                                     .apply()
+                                PresenceKeepAliveWorker.schedule(ctx)
                                 _activeMobile.value = cleanMobile
                                 attachUserListener(cleanMobile)
                                 onSuccess(committedExpiry)
@@ -878,6 +954,7 @@ object RotVahanSyncManager {
                                 .putString(KEY_MOBILE, cleanMobile)
                                 .putLong(KEY_EXPIRY, tentativeExpiry)
                                 .apply()
+                            PresenceKeepAliveWorker.schedule(ctx)
                             _activeMobile.value = cleanMobile
                             attachUserListener(cleanMobile)
                             onSuccess(tentativeExpiry)
@@ -985,6 +1062,7 @@ object RotVahanSyncManager {
     }
 
     fun clearActiveUser(context: Context) {
+        PresenceKeepAliveWorker.cancel(context)
         val m = _activeMobile.value
         if (m != null) {
             val userRef = database.getReference("users/$m")

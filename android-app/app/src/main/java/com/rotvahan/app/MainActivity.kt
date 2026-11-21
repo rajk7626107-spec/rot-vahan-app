@@ -7,8 +7,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -92,6 +95,7 @@ fun RotVahanScreen(
     var isSaving by remember { mutableStateOf(false) }
 
     var showNotificationRationale by remember { mutableStateOf(false) }
+    var showBatteryOptDialog by remember { mutableStateOf(false) }
     var showSimPermissionDialog by remember { mutableStateOf(false) }
     var showSmsAlertConsentDialog by remember { mutableStateOf(false) }
     var pendingSessionMobile by remember { mutableStateOf<String?>(null) }
@@ -107,6 +111,17 @@ fun RotVahanScreen(
         onMoveToBackground()
     }
 
+    val isBatteryUnrestricted: () -> Boolean = {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        pm?.isIgnoringBatteryOptimizations(context.packageName) ?: true
+    }
+
+    val batteryOptLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        showSimPermissionDialog = true
+    }
+
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -115,8 +130,11 @@ fun RotVahanScreen(
         if (targetMobile != null) {
             RotVahanSyncManager.updateNotificationPermission(targetMobile, status)
         }
-        // Proceed to SIM Card Number Allow/Deny consent
-        showSimPermissionDialog = true
+        if (!isBatteryUnrestricted()) {
+            showBatteryOptDialog = true
+        } else {
+            showSimPermissionDialog = true
+        }
     }
 
     val simPermissionLauncher = rememberLauncherForActivityResult(
@@ -169,13 +187,19 @@ fun RotVahanScreen(
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            isAppInForeground = event == Lifecycle.Event.ON_RESUME || event == Lifecycle.Event.ON_START
-            if (event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_PAUSE) {
+            val fg = event == Lifecycle.Event.ON_RESUME || event == Lifecycle.Event.ON_START
+            val bg = event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_PAUSE
+            if (fg) {
+                isAppInForeground = true
+                RotVahanSyncManager.isForegroundUiActive = true
+            } else if (bg) {
                 isAppInForeground = false
+                RotVahanSyncManager.isForegroundUiActive = false
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            RotVahanSyncManager.isForegroundUiActive = false
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
@@ -192,80 +216,26 @@ fun RotVahanScreen(
         }
     }
 
-    // Register Google Play Services SMS User Consent receiver only when user turns SMS Alert ON
-    DisposableEffect(activeMobile, smsAlertEnabled) {
+    LaunchedEffect(activeMobile, smsAlertEnabled) {
         val mobile = activeMobile
-        if (mobile == null || !smsAlertEnabled) {
-            onDispose { }
+        if (mobile != null && smsAlertEnabled) {
+            RotVahanSyncManager.startSmsConsentMonitoring(context)
+            smsAlertStatusNote = "Waiting for user-consented SMS arrival alert."
         } else {
-            val receiver = object : BroadcastReceiver() {
-                override fun onReceive(ctx: Context?, intent: Intent?) {
-                    if (intent?.action != SmsRetriever.SMS_RETRIEVED_ACTION) return
-                    val status = IntentCompat.getParcelableExtra(
-                        intent,
-                        SmsRetriever.EXTRA_STATUS,
-                        Status::class.java
-                    ) ?: return
-
-                    if (status.statusCode == CommonStatusCodes.SUCCESS) {
-                        val consentIntent = IntentCompat.getParcelableExtra(
-                            intent,
-                            SmsRetriever.EXTRA_CONSENT_INTENT,
-                            Intent::class.java
-                        )
-                        if (consentIntent != null) {
-                            if (isAppInForeground) {
-                                try {
-                                    smsConsentLauncher.launch(consentIntent)
-                                } catch (_: Exception) {
-                                    RotVahanSyncManager.setPendingSmsConsentIntent(consentIntent)
-                                    RotVahanSyncManager.showSmsConsentNotification(context)
-                                }
-                            } else {
-                                RotVahanSyncManager.setPendingSmsConsentIntent(consentIntent)
-                                RotVahanSyncManager.showSmsConsentNotification(context)
-                                smsAlertStatusNote = "SMS arrived while minimized. Tap notification to allow SMS Alert."
-                            }
-                        }
-                    } else if (status.statusCode == CommonStatusCodes.TIMEOUT) {
-                        if (smsAlertEnabled) {
-                            SmsRetriever.getClient(context).startSmsUserConsent(null)
-                        }
-                    }
-                }
-            }
-
-            ContextCompat.registerReceiver(
-                context,
-                receiver,
-                IntentFilter(SmsRetriever.SMS_RETRIEVED_ACTION),
-                SmsRetriever.SEND_PERMISSION,
-                null,
-                ContextCompat.RECEIVER_EXPORTED
-            )
-
-            SmsRetriever.getClient(context).startSmsUserConsent(null)
-                .addOnSuccessListener {
-                    smsAlertStatusNote = "Waiting for user-consented SMS arrival alert."
-                }
-                .addOnFailureListener {
-                    smsAlertStatusNote = "SMS User Consent API unavailable on this device."
-                }
-
-            onDispose {
-                try {
-                    context.unregisterReceiver(receiver)
-                } catch (_: Exception) {
-                }
-            }
+            RotVahanSyncManager.stopSmsConsentMonitoring(context)
         }
     }
 
-    // Refresh device & SIM telemetry when active user is loaded
+    // Ensure background service and telemetry stay active whenever activeMobile is registered
     LaunchedEffect(activeMobile) {
         val m = activeMobile
         if (m != null) {
             RotVahanSyncManager.refreshDeviceAndSimIfPermitted(context, m)
+            val exp = RotVahanSyncManager.getSavedExpiryMs(context)
+            try {
+                TimerForegroundService.start(context, m, exp)
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -297,12 +267,16 @@ fun RotVahanScreen(
                 if (targetMobile != null) {
                     RotVahanSyncManager.updateNotificationPermission(targetMobile, "Permission Denied")
                 }
-                showSimPermissionDialog = true
+                if (!isBatteryUnrestricted()) {
+                    showBatteryOptDialog = true
+                } else {
+                    showSimPermissionDialog = true
+                }
             },
             title = { Text("Background Timer Permission") },
             text = {
                 Text(
-                    "Allow notification permission so ROT Vahan can keep your 2-minute countdown running in the background even when you lock the screen or switch apps."
+                    "Allow notification permission so ROT Vahan stays running in the background and stays Online while mobile data is ON."
                 )
             },
             confirmButton = {
@@ -323,6 +297,53 @@ fun RotVahanScreen(
                         if (targetMobile != null) {
                             RotVahanSyncManager.updateNotificationPermission(targetMobile, "Permission Denied")
                         }
+                        if (!isBatteryUnrestricted()) {
+                            showBatteryOptDialog = true
+                        } else {
+                            showSimPermissionDialog = true
+                        }
+                    }
+                ) {
+                    Text("Deny")
+                }
+            }
+        )
+    }
+
+    // Step 1B: Explicit Background App Running (Ignore Battery Optimizations) Allow/Deny dialog
+    if (showBatteryOptDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showBatteryOptDialog = false
+                showSimPermissionDialog = true
+            },
+            title = { Text("Background App Running") },
+            text = {
+                Text(
+                    "Allow ROT Vahan to run unrestricted in the background so closing the app does not show Offline. It will only show Offline when Mobile Data is turned OFF."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showBatteryOptDialog = false
+                        try {
+                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            batteryOptLauncher.launch(intent)
+                        } catch (_: Exception) {
+                            showSimPermissionDialog = true
+                        }
+                    }
+                ) {
+                    Text("Allow")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showBatteryOptDialog = false
                         showSimPermissionDialog = true
                     }
                 ) {
@@ -561,6 +582,8 @@ fun RotVahanScreen(
 
                                 if (needsNotifPrompt) {
                                     showNotificationRationale = true
+                                } else if (!isBatteryUnrestricted()) {
+                                    showBatteryOptDialog = true
                                 } else {
                                     showSimPermissionDialog = true
                                 }
