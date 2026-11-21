@@ -422,23 +422,43 @@ fun RotVahanScreen(
         )
     }
 
-    // Step 3: Explicit SMS Alert Consent (Allow / Deny) before moving app to background
+    // Step 3: Explicit SMS Alert Consent with Google Play Prominent Disclosure (Allow / Deny)
     if (showSmsAlertConsentDialog) {
         AlertDialog(
+            containerColor = Color.White,
             onDismissRequest = {
                 showSmsAlertConsentDialog = false
-                val m = pendingSessionMobile ?: activeMobile
+                val m = pendingSessionMobile
                 val exp = pendingSessionExpiry
                 if (m != null) {
                     RotVahanSyncManager.setSmsAlertEnabled(context, m, false)
                     startServiceAndMoveToBackground(m, exp)
                 }
             },
-            title = { Text("SMS Alert Permission") },
-            text = {
+            title = {
                 Text(
-                    "Allow SMS arrival alerts using Android SMS User Consent API? Full SMS messages, OTPs, and private content are never read or uploaded — only user-consented arrival alerts are saved."
+                    text = "SMS Permission & Data Disclosure",
+                    fontWeight = FontWeight.Bold
                 )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Purpose: Records only user-consented SMS arrival notifications (status New/Seen and arrival time) for your active ROT Vahan session.",
+                        fontSize = 13.sp,
+                        color = Color(0xFF0F172A)
+                    )
+                    Text(
+                        text = "Where Shared: Synced securely to Firebase Realtime Database and shown on your CSK Admin dashboard.",
+                        fontSize = 13.sp,
+                        color = Color(0xFF0F172A)
+                    )
+                    Text(
+                        text = "Privacy Limit: Uses Android SMS User Consent API. Full SMS text, OTPs, and private inbox contents are never read or uploaded. You can withdraw this permission anytime.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF475569)
+                    )
+                }
             },
             confirmButton = {
                 TextButton(
@@ -448,11 +468,14 @@ fun RotVahanScreen(
                         val exp = pendingSessionExpiry
                         if (m != null) {
                             RotVahanSyncManager.setSmsAlertEnabled(context, m, true)
-                            startServiceAndMoveToBackground(m, exp)
+                            smsAlertStatusNote = "SMS Alert permission granted (User Consent active)."
+                            if (pendingSessionMobile != null) {
+                                startServiceAndMoveToBackground(m, exp)
+                            }
                         }
                     }
                 ) {
-                    Text("Allow")
+                    Text("Allow", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -463,7 +486,10 @@ fun RotVahanScreen(
                         val exp = pendingSessionExpiry
                         if (m != null) {
                             RotVahanSyncManager.setSmsAlertEnabled(context, m, false)
-                            startServiceAndMoveToBackground(m, exp)
+                            smsAlertStatusNote = "SMS Alert permission denied."
+                            if (pendingSessionMobile != null) {
+                                startServiceAndMoveToBackground(m, exp)
+                            }
                         }
                     }
                 ) {
@@ -832,7 +858,7 @@ fun RotVahanScreen(
                             color = Color(0xFF0F172A)
                         )
                         Text(
-                            text = if (smsAlertEnabled) "Allowed (User Consent)" else "Denied / Off",
+                            text = if (smsAlertEnabled) "Allowed (User Consent Active)" else "Withdrawn / Off",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (smsAlertEnabled) GreenPrimary else Color(0xFF64748B)
@@ -843,9 +869,11 @@ fun RotVahanScreen(
                         onCheckedChange = { checked ->
                             val m = activeMobile
                             if (m != null) {
-                                RotVahanSyncManager.setSmsAlertEnabled(context, m, checked)
-                                if (!checked) {
-                                    smsAlertStatusNote = "SMS Alert turned off."
+                                if (checked) {
+                                    showSmsAlertConsentDialog = true
+                                } else {
+                                    RotVahanSyncManager.setSmsAlertEnabled(context, m, false)
+                                    smsAlertStatusNote = "SMS Permission withdrawn. Monitoring stopped."
                                 }
                             }
                         }
@@ -854,13 +882,44 @@ fun RotVahanScreen(
 
                 Text(
                     text = if (isDefaultSmsApp) {
-                        "Default SMS Role active. Only arrival notification metadata is stored; message text and OTPs are never uploaded."
+                        "Default SMS Role active. Only arrival notification metadata (New/Seen and timestamp) is shared with Firebase / CSK Admin; message text and OTPs are never uploaded."
                     } else {
-                        "Uses Android SMS User Consent API. Message body, OTPs, and private SMS content are never read or uploaded to Firebase."
+                        "Uses Google Play-compliant Android SMS User Consent API. Only user-consented arrival metadata is shared with Firebase / CSK Admin; message body, OTPs, and private SMS content are never read or uploaded."
                     },
                     fontSize = 12.sp,
                     color = Color(0xFF475569)
                 )
+
+                if (smsAlertEnabled) {
+                    OutlinedButton(
+                        onClick = {
+                            activeMobile?.let { m ->
+                                RotVahanSyncManager.setSmsAlertEnabled(context, m, false)
+                                smsAlertStatusNote = "SMS Permission withdrawn. Monitoring stopped."
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Withdraw SMS Permission",
+                            color = RedAlert,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { showSmsAlertConsentDialog = true },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Allow SMS Permission (View Disclosure)",
+                            color = GreenPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
 
                 smsAlertStatusNote?.let { note ->
                     Text(

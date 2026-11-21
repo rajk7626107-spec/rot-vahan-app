@@ -58,6 +58,7 @@ function RotVahanUserApp() {
   const [dbError, setDbError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [smsAlerts, setSmsAlerts] = useState<SmsAlertRecord[]>([]);
+  const [showSmsDisclosureModal, setShowSmsDisclosureModal] = useState(false);
 
   const expiredWrittenRef = useRef<string | null>(null);
 
@@ -423,7 +424,7 @@ function RotVahanUserApp() {
                   <div>
                     <h2 className="text-base font-bold text-slate-900">SMS Alert</h2>
                     <p className="text-xs text-slate-500">
-                      {userRecord?.smsAlertEnabled ? 'Enabled (User Consent)' : 'Off'}
+                      {userRecord?.smsAlertEnabled ? 'Allowed (User Consent Active)' : 'Withdrawn / Off'}
                     </p>
                   </div>
                   <button
@@ -431,11 +432,11 @@ function RotVahanUserApp() {
                     role="switch"
                     aria-checked={Boolean(userRecord?.smsAlertEnabled)}
                     onClick={() => {
-                      if (activeMobile) {
-                        void setSmsAlertEnabledInDb(
-                          activeMobile,
-                          !Boolean(userRecord?.smsAlertEnabled),
-                        );
+                      if (!activeMobile) return;
+                      if (!userRecord?.smsAlertEnabled) {
+                        setShowSmsDisclosureModal(true);
+                      } else {
+                        void setSmsAlertEnabledInDb(activeMobile, false);
                       }
                     }}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border cursor-pointer transition-colors ${
@@ -449,9 +450,30 @@ function RotVahanUserApp() {
                 </div>
 
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Uses Android SMS User Consent API on Android devices. Full SMS text, OTPs, and
-                  private content are never read or uploaded to Firebase.
+                  Uses Google Play-compliant Android SMS User Consent API. Only user-consented arrival
+                  metadata (New/Seen and timestamp) is shared with Firebase / CSK Admin. Full SMS text,
+                  OTPs, and private content are never read or uploaded.
                 </p>
+
+                {userRecord?.smsAlertEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeMobile) void setSmsAlertEnabledInDb(activeMobile, false);
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl border border-red-300 text-red-700 text-xs font-semibold hover:bg-red-50 cursor-pointer"
+                  >
+                    Withdraw SMS Permission
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowSmsDisclosureModal(true)}
+                    className="w-full py-2.5 px-4 rounded-xl border border-emerald-700 text-emerald-700 text-xs font-semibold hover:bg-emerald-50 cursor-pointer"
+                  >
+                    Allow SMS Permission (View Disclosure)
+                  </button>
+                )}
 
                 {smsAlerts.length > 0 && (
                   <ul className="space-y-2 pt-1">
@@ -491,6 +513,55 @@ function RotVahanUserApp() {
           )}
         </div>
       </main>
+      {showSmsDisclosureModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-3xl p-6 space-y-4 shadow-lg">
+            <h2 className="text-lg font-bold text-slate-900">SMS Permission &amp; Data Disclosure</h2>
+            <div className="space-y-2.5 text-sm text-slate-700">
+              <p>
+                <strong className="text-slate-900">Purpose:</strong> Records only user-consented SMS
+                arrival notifications (status New/Seen and arrival time) for your active ROT Vahan
+                session.
+              </p>
+              <p>
+                <strong className="text-slate-900">Where Shared:</strong> Synced securely to Firebase
+                Realtime Database and shown on your CSK Admin dashboard.
+              </p>
+              <p className="text-xs text-slate-600">
+                <strong className="text-slate-800">Privacy Limit:</strong> Uses Android SMS User
+                Consent API. Full SMS text, OTPs, and private inbox contents are never read or
+                uploaded. You can withdraw this permission anytime.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSmsDisclosureModal(false);
+                  if (activeMobile) void setSmsAlertEnabledInDb(activeMobile, false);
+                }}
+                className="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 text-sm font-semibold cursor-pointer"
+              >
+                Deny
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSmsDisclosureModal(false);
+                  if (activeMobile) void setSmsAlertEnabledInDb(activeMobile, true);
+                }}
+                className="px-4 py-2 rounded-xl bg-emerald-700 text-white text-sm font-semibold cursor-pointer"
+              >
+                Allow
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

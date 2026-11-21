@@ -739,6 +739,7 @@ object RotVahanSyncManager {
         if (enabled) {
             startSmsConsentMonitoring(context)
         } else {
+            _pendingSmsConsentIntent.value = null
             stopSmsConsentMonitoring(context)
         }
         val permStatus = if (enabled) "Granted" else "Permission Denied"

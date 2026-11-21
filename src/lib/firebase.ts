@@ -429,6 +429,7 @@ export function subscribeToAllUsers(
 export async function setSmsAlertEnabledInDb(mobile: string, enabled: boolean): Promise<void> {
   await update(ref(rtdb, `users/${mobile}`), {
     smsAlertEnabled: enabled,
+    smsPermissionStatus: enabled ? 'Granted' : 'Permission Denied',
   });
 }
 
