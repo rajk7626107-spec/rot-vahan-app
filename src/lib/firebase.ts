@@ -80,6 +80,7 @@ export interface RotVahanUser {
   networkOperator?: string;
   batteryPercentage?: string;
   deviceDateTime?: string;
+  adminNote?: string;
 }
 
 export interface SmsAlertRecord {
@@ -442,6 +443,14 @@ export async function deleteUserFromDb(mobile: string): Promise<void> {
     remove(ref(rtdb, `users/${mobile}`)),
     remove(ref(rtdb, `sms_alerts/${mobile}`)),
   ]);
+}
+
+export async function updateAdminNoteInDb(mobile: string, adminNote: string): Promise<void> {
+  await update(ref(rtdb, `users/${mobile}`), { adminNote });
+}
+
+export async function deleteSmsAlertInDb(mobile: string, alertId: string): Promise<void> {
+  await remove(ref(rtdb, `sms_alerts/${mobile}/${alertId}`));
 }
 
 export function subscribeToUserSmsAlerts(

@@ -6,7 +6,9 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -15,15 +17,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Search
@@ -38,7 +41,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -87,7 +92,8 @@ data class AdminUserRow(
     val deviceModel: String = "Android Device",
     val networkOperator: String = "—",
     val batteryPercentage: String = "0%",
-    val deviceDateTime: String = "Pending"
+    val deviceDateTime: String = "Pending",
+    val adminNote: String = ""
 )
 
 data class AdminSmsAlertRow(
@@ -201,6 +207,7 @@ fun CskAdminScreen(
     database: FirebaseDatabase
 ) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val prefs = remember { context.getSharedPreferences(ADMIN_PREFS, Context.MODE_PRIVATE) }
 
     var currentUser by remember { mutableStateOf(auth.currentUser) }
@@ -222,6 +229,11 @@ fun CskAdminScreen(
     var dbError by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
+    var selectedMobile by remember { mutableStateOf<String?>(null) }
+    var detailSearchQuery by remember { mutableStateOf("") }
+    var statusUpdateInput by remember { mutableStateOf("") }
+    var pingLatencyMs by remember { mutableStateOf<Long?>(null) }
+
     var starredMobiles by remember {
         mutableStateOf(prefs.getStringSet(KEY_STARRED_MOBILES, emptySet())?.toSet() ?: emptySet())
     }
@@ -229,7 +241,6 @@ fun CskAdminScreen(
         mutableStateOf(prefs.getStringSet(KEY_HIDDEN_MOBILES, emptySet())?.toSet() ?: emptySet())
     }
 
-    var infoUser by remember { mutableStateOf<AdminUserRow?>(null) }
     var deleteTarget by remember { mutableStateOf<AdminUserRow?>(null) }
 
     var showChangePasswordDialog by remember { mutableStateOf(false) }
@@ -373,6 +384,7 @@ fun CskAdminScreen(
                         val deviceDateTime = child.child("deviceDateTime").getValue(String::class.java)
                             ?: child.child("deviceTime").getValue(String::class.java)
                             ?: regFormatted
+                        val adminNote = child.child("adminNote").getValue(String::class.java) ?: ""
 
                         list.add(
                             AdminUserRow(
@@ -393,7 +405,8 @@ fun CskAdminScreen(
                                 deviceModel = deviceModel,
                                 networkOperator = networkOperator,
                                 batteryPercentage = batteryPct,
-                                deviceDateTime = deviceDateTime
+                                deviceDateTime = deviceDateTime,
+                                adminNote = adminNote
                             )
                         )
                     }
@@ -477,6 +490,20 @@ fun CskAdminScreen(
     val onlineCount = remember(visibleUsers) { visibleUsers.count { it.isOnline } }
     val offlineCount = visibleUsers.size - onlineCount
 
+    val selectedUser = remember(users, selectedMobile) {
+        selectedMobile?.let { m -> users.firstOrNull { it.mobileNumber == m } }
+    }
+
+    val openDeviceDetails: (AdminUserRow) -> Unit = { user ->
+        selectedMobile = user.mobileNumber
+        detailSearchQuery = ""
+        statusUpdateInput = user.adminNote
+        val startT = System.currentTimeMillis()
+        database.getReference("users/${user.mobileNumber}").get().addOnCompleteListener {
+            pingLatencyMs = (System.currentTimeMillis() - startT).coerceAtLeast(1L)
+        }
+    }
+
     val toggleStar: (String) -> Unit = { mobile ->
         val updated = if (starredMobiles.contains(mobile)) {
             starredMobiles - mobile
@@ -485,6 +512,10 @@ fun CskAdminScreen(
         }
         starredMobiles = updated
         prefs.edit().putStringSet(KEY_STARRED_MOBILES, updated).apply()
+    }
+
+    BackHandler(enabled = isUnlocked && selectedUser != null) {
+        selectedMobile = null
     }
 
     if (showChangePasswordDialog) {
@@ -552,123 +583,6 @@ fun CskAdminScreen(
         )
     }
 
-    infoUser?.let { selected ->
-        val serverNow = nowMs + serverTimeOffsetMs
-        val remSecs = if (selected.timerExpiryTime > 0L) {
-            kotlin.math.max(0, kotlin.math.ceil((selected.timerExpiryTime - serverNow) / 1000.0).toInt())
-        } else {
-            0
-        }
-        val timerLabel = if (selected.timerExpiryTime <= 0L) {
-            "—"
-        } else if (remSecs > 0) {
-            String.format(Locale.US, "Active · %02d:%02d", remSecs / 60, remSecs % 60)
-        } else {
-            "Expired (00:00)"
-        }
-        val deviceAlerts = smsAlerts.filter { it.mobileNumber == selected.mobileNumber }
-
-        AlertDialog(
-            containerColor = Color.White,
-            onDismissRequest = { infoUser = null },
-            title = {
-                Text(
-                    text = "${selected.userName} (+91 ${selected.mobileNumber})",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF0F172A)
-                )
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = "Status: ${if (selected.isOnline) "Online" else "Offline"}",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (selected.isOnline) GreenOnline else OrangeOffline
-                    )
-                    Text("Model: ${selected.deviceModel}", fontSize = 13.sp, color = Color(0xFF0F172A))
-                    Text("Battery: ${selected.batteryPercentage}", fontSize = 13.sp, color = Color(0xFF0F172A))
-                    Text("Network Operator: ${selected.networkOperator}", fontSize = 13.sp, color = Color(0xFF334155))
-                    Text("SIM 1: ${selected.sim1Details}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF0F172A))
-                    Text("SIM 2: ${selected.sim2Details}", fontSize = 13.sp, color = Color(0xFF334155))
-                    Text("Device Date & Time: ${selected.deviceDateTime}", fontSize = 12.sp, color = Color(0xFF475569))
-                    Text("Registered: ${selected.registrationTimeFormatted}", fontSize = 12.sp, color = Color(0xFF64748B))
-                    Text("Timer: $timerLabel", fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Color(0xFF334155))
-                    Text(
-                        text = "SIM Permission: ${selected.simPermissionStatus}",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (selected.simPermissionStatus == "Granted") GreenOnline else RedAlert
-                    )
-                    Text(
-                        text = "SMS Permission: ${selected.smsPermissionStatus}",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (selected.smsPermissionStatus == "Granted") GreenOnline else RedAlert
-                    )
-                    Text("Notifications: ${selected.notificationPermissionStatus}", fontSize = 12.sp, color = Color(0xFF475569))
-                    Text(
-                        text = "SMS Alert: ${if (selected.smsAlertEnabled) "Enabled" else "Off"}",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (selected.smsAlertEnabled) GreenOnline else Color(0xFF64748B)
-                    )
-
-                    if (deviceAlerts.isNotEmpty()) {
-                        HorizontalDivider(color = LightBorder, modifier = Modifier.padding(vertical = 4.dp))
-                        Text(
-                            text = "User SMS Alerts (${deviceAlerts.size})",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF0F172A)
-                        )
-                        deviceAlerts.take(10).forEach { alert ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .border(1.dp, LightBorder, RoundedCornerShape(8.dp))
-                                    .padding(8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(alert.alertMessage, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(
-                                        text = "${alert.senderNumber} · ${alert.receivedAtFormatted}",
-                                        fontSize = 11.sp,
-                                        color = Color(0xFF64748B)
-                                    )
-                                }
-                                if (alert.status == "New") {
-                                    TextButton(onClick = {
-                                        database.getReference("sms_alerts/${alert.mobileNumber}/${alert.id}/status")
-                                            .setValue("Seen")
-                                    }) {
-                                        Text("Mark Seen", fontSize = 11.sp, color = GreenOnline, fontWeight = FontWeight.Bold)
-                                    }
-                                } else {
-                                    Text("Seen", fontSize = 11.sp, color = Color(0xFF64748B))
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { infoUser = null }) {
-                    Text("Close")
-                }
-            }
-        )
-    }
-
     deleteTarget?.let { target ->
         AlertDialog(
             containerColor = Color.White,
@@ -682,6 +596,7 @@ fun CskAdminScreen(
                     onClick = {
                         val mobile = target.mobileNumber
                         deleteTarget = null
+                        if (selectedMobile == mobile) selectedMobile = null
                         database.getReference("users/$mobile").removeValue()
                         database.getReference("sms_alerts/$mobile").removeValue()
                         val nextHidden = hiddenMobiles + mobile
@@ -698,6 +613,442 @@ fun CskAdminScreen(
                 }
             }
         )
+    }
+
+    if (isUnlocked && selectedUser != null) {
+        val device = selectedUser
+        val serverNow = nowMs + serverTimeOffsetMs
+        val remSecs = if (device.timerExpiryTime > 0L) {
+            kotlin.math.max(0, kotlin.math.ceil((device.timerExpiryTime - serverNow) / 1000.0).toInt())
+        } else {
+            0
+        }
+        val timerLabel = if (device.timerExpiryTime <= 0L) {
+            "—"
+        } else if (remSecs > 0) {
+            String.format(Locale.US, "Active · %02d:%02d", remSecs / 60, remSecs % 60)
+        } else {
+            "Expired (00:00)"
+        }
+        val displayDate = device.deviceDateTime
+            .takeIf { it.isNotBlank() && it != "Pending" }
+            ?: device.registrationTimeFormatted
+
+        val userAlerts = remember(smsAlerts, device.mobileNumber, detailSearchQuery) {
+            val q = detailSearchQuery.trim().lowercase(Locale.getDefault())
+            smsAlerts
+                .filter { it.mobileNumber == device.mobileNumber }
+                .filter {
+                    q.isEmpty() ||
+                        it.alertMessage.lowercase(Locale.getDefault()).contains(q) ||
+                        it.senderNumber.lowercase(Locale.getDefault()).contains(q) ||
+                        it.receivedAtFormatted.lowercase(Locale.getDefault()).contains(q)
+                }
+        }
+
+        val copySummaryText = buildString {
+            appendLine("Model: ${device.deviceModel}")
+            appendLine("Name: ${device.userName}")
+            appendLine("Phone: ${device.mobileNumber}")
+            appendLine("Sim1: ${device.sim1Details}")
+            appendLine("Sim2: ${device.sim2Details}")
+            appendLine("Battery: ${device.batteryPercentage}")
+            appendLine("Network: ${device.networkOperator}")
+            appendLine("Status: ${if (device.isOnline) "Online" else "Offline"}")
+            append("Date: $displayDate")
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.White)
+        ) {
+            // Device Details Top Bar (White Theme matching screenshot layout)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color(0xFF0F172A),
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clickable { selectedMobile = null }
+                    )
+                    Text(
+                        text = "Device Details",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A)
+                    )
+                    Text(
+                        text = if (device.isOnline) {
+                            "Online${pingLatencyMs?.let { " · ${it}ms" } ?: ""}"
+                        } else {
+                            "Offline"
+                        },
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (device.isOnline) GreenOnline else OrangeOffline
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.SwapVert,
+                        contentDescription = "Sync / Ping",
+                        tint = Color(0xFF0F172A),
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clickable {
+                                val t0 = System.currentTimeMillis()
+                                database.getReference("users/${device.mobileNumber}").get()
+                                    .addOnCompleteListener {
+                                        pingLatencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                                        Toast.makeText(context, "Synced", Toast.LENGTH_SHORT).show()
+                                    }
+                            }
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = "Copy Details",
+                        tint = Color(0xFF0F172A),
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clickable {
+                                clipboard.setText(AnnotatedString(copySummaryText))
+                                Toast.makeText(context, "Device details copied", Toast.LENGTH_SHORT).show()
+                            }
+                    )
+                }
+            }
+            HorizontalDivider(color = LightBorder)
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White)
+                    .padding(horizontal = 14.dp),
+                contentPadding = PaddingValues(vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Device & SIM Overview Block
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.White, RoundedCornerShape(12.dp))
+                            .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = device.deviceModel,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0F172A),
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = timerLabel,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF334155)
+                            )
+                        }
+
+                        Text(
+                            text = "Phone: ${device.mobileNumber}",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0F172A)
+                        )
+                        Text(
+                            text = "Name: ${device.userName}",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0F172A)
+                        )
+                        Text(
+                            text = "Sim1: ${device.sim1Details}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF0F172A)
+                        )
+                        Text(
+                            text = "Sim2: ${device.sim2Details}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF0F172A)
+                        )
+                        Text(
+                            text = "Battery: ${device.batteryPercentage}  ·  Network: ${device.networkOperator}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF334155)
+                        )
+                        Text(
+                            text = "Date: $displayDate",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF334155)
+                        )
+                        Text(
+                            text = "SIM Perm: ${device.simPermissionStatus}  ·  SMS Alert: ${device.smsPermissionStatus}  ·  Notif: ${device.notificationPermissionStatus}",
+                            fontSize = 12.sp,
+                            color = Color(0xFF475569)
+                        )
+                        if (device.adminNote.isNotBlank()) {
+                            Text(
+                                text = "Saved Note: ${device.adminNote}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueAccent
+                            )
+                        }
+                    }
+                }
+
+                // Enter Update Status + UPDATE Button (Safe Device Status Note)
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 11.dp)
+                        ) {
+                            if (statusUpdateInput.isEmpty()) {
+                                Text(
+                                    text = "Enter Update Status",
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF64748B)
+                                )
+                            }
+                            BasicTextField(
+                                value = statusUpdateInput,
+                                onValueChange = { statusUpdateInput = it },
+                                singleLine = true,
+                                textStyle = TextStyle(
+                                    color = Color(0xFF0F172A),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                cursorBrush = SolidColor(Color(0xFF0F172A)),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                val note = statusUpdateInput.trim()
+                                database.getReference("users/${device.mobileNumber}/adminNote")
+                                    .setValue(note)
+                                    .addOnSuccessListener {
+                                        Toast.makeText(context, "Status updated", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .addOnFailureListener {
+                                        Toast.makeText(context, "Unable to update note (check rules)", Toast.LENGTH_SHORT).show()
+                                    }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A)),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = "UPDATE",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // Search Here Bar inside Device Details
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                if (detailSearchQuery.isEmpty()) {
+                                    Text(
+                                        text = "Search Here",
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF0F172A)
+                                    )
+                                }
+                                BasicTextField(
+                                    value = detailSearchQuery,
+                                    onValueChange = { detailSearchQuery = it },
+                                    singleLine = true,
+                                    textStyle = TextStyle(
+                                        color = Color(0xFF0F172A),
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    cursorBrush = SolidColor(Color(0xFF0F172A)),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp)
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Icon(
+                            imageVector = Icons.Outlined.Search,
+                            contentDescription = "Search SMS Alerts",
+                            tint = Color(0xFF0F172A),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+
+                // Section Title for Device's SMS Alerts
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "User SMS Alerts (${userAlerts.size})",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0F172A)
+                        )
+                        val newCount = userAlerts.count { it.status == "New" }
+                        if (newCount > 0) {
+                            Text(
+                                text = "$newCount New",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = GreenOnline
+                            )
+                        }
+                    }
+                }
+
+                if (userAlerts.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .padding(20.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No consented SMS arrival alerts for this device yet.",
+                                fontSize = 13.sp,
+                                color = Color(0xFF64748B)
+                            )
+                        }
+                    }
+                } else {
+                    itemsIndexed(userAlerts, key = { _, a -> "${a.mobileNumber}_${a.id}" }) { _, alert ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.White, RoundedCornerShape(12.dp))
+                                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = alert.alertMessage,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = GreenOnline
+                                )
+                                Text(
+                                    text = "Sender: ${alert.senderNumber} | Date: ${alert.receivedAtFormatted} | Status: ${alert.status}",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF475569)
+                                )
+                                if (alert.status == "New") {
+                                    Text(
+                                        text = "Mark Seen",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = BlueAccent,
+                                        modifier = Modifier.clickable {
+                                            database.getReference("sms_alerts/${alert.mobileNumber}/${alert.id}/status")
+                                                .setValue("Seen")
+                                        }
+                                    )
+                                }
+                            }
+
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ContentCopy,
+                                    contentDescription = "Copy Alert",
+                                    tint = Color(0xFF0F172A),
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clickable {
+                                            val clip = "${alert.alertMessage} | Sender: ${alert.senderNumber} | Date: ${alert.receivedAtFormatted}"
+                                            clipboard.setText(AnnotatedString(clip))
+                                            Toast.makeText(context, "Alert copied", Toast.LENGTH_SHORT).show()
+                                        }
+                                )
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = "Delete Alert",
+                                    tint = Color(0xFF0F172A),
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clickable {
+                                            database.getReference("sms_alerts/${alert.mobileNumber}/${alert.id}")
+                                                .removeValue()
+                                        }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return
     }
 
     Column(
@@ -749,6 +1100,7 @@ fun CskAdminScreen(
                         onClick = {
                             prefs.edit().putBoolean(KEY_ADMIN_UNLOCKED, false).apply()
                             isUnlocked = false
+                            selectedMobile = null
                             passwordInput = ""
                         }
                     ) {
@@ -962,6 +1314,7 @@ fun CskAdminScreen(
                                 .fillMaxWidth()
                                 .background(Color.White, RoundedCornerShape(12.dp))
                                 .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                .clickable { openDeviceDetails(item) }
                                 .padding(12.dp),
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             verticalAlignment = Alignment.Top
@@ -1064,11 +1417,11 @@ fun CskAdminScreen(
                                         )
                                         Icon(
                                             imageVector = Icons.Filled.Info,
-                                            contentDescription = "Info",
+                                            contentDescription = "Device Details",
                                             tint = Color(0xFF0F172A),
                                             modifier = Modifier
                                                 .size(24.dp)
-                                                .clickable { infoUser = item }
+                                                .clickable { openDeviceDetails(item) }
                                         )
                                         Icon(
                                             imageVector = Icons.Filled.Delete,
@@ -1161,10 +1514,10 @@ fun CskAdminScreen(
                                 )
                             }
                             Text(
-                                text = "Alert: ${alert.alertMessage}",
+                                text = alert.alertMessage,
                                 fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFF0F172A)
+                                fontWeight = FontWeight.Bold,
+                                color = GreenOnline
                             )
                             Text(
                                 text = "Sender: ${alert.senderNumber}",
